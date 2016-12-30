@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Shadows and Reflections</title>
+<style>
+  body {
+    background-color : gray;
+    font-family: "Arial Rounded MT Bold", "Helvetica Rounded", Arial, sans-serif;
+  }
+  h1 {
+    font-size : 1.2em;
+  }
+  footer {
+    font-size : 0.7 em;
+    font-family: "Arial Rounded MT", "Helvetica Rounded", Arial, sans-serif;
+    font-style: italic;
+  }
+</style>
+
+<script src="matrix.js"></script>
+<script src="glass.js"></script>
+<script src="bottle.js"></script>
+<script src="webgl-debug.js"></script>
+
+<script id="vertex" type="x-shader">
+	attribute vec4 vertexPosition;
+	attribute vec3 vertexNormal;
+	attribute vec2 vertexTexCoord;
+	
+	varying vec2 texCoord;
+	varying vec4 color;
+
+	uniform mat4 ModelViewProjection;
+	uniform mat4 ModelViewMatrix;
+	uniform mat3 NormalMatrix;
+	uniform mat4 TextureMatrix;
+
+	uniform vec3 ambientLight;
+	uniform vec3 light0Color;
+	uniform vec4 light0Position;
+	uniform vec3 light1Color;
+	uniform vec3 light1Position;
+
+	uniform vec3 materialAmbient;
+	uniform vec3 materialDiffuse;
+	uniform vec3 materialSpecular;
+	uniform float materialShininess;
+
+	void main() {
+		gl_Position = ModelViewProjection*vertexPosition;
+		texCoord = (TextureMatrix*vec4(vertexTexCoord,0.0,1.0)).st;
+
+		vec3 P = vec3(ModelViewMatrix * vertexPosition);
+		vec3 N = normalize(NormalMatrix * vertexNormal);
+		vec3 V = normalize(-P);
+		vec3 I_ambient = materialAmbient * ambientLight;
+
+		vec3 L = normalize(light0Position.xyz - P);
+		float cos_theta = dot(L,N);
+		vec3 I_diffuse = materialDiffuse * light0Color * vec3(max(0.0, cos_theta));
+		vec3 I_specular = vec3(0.0, 0.0, 0.0);
+
+		if (cos_theta > 0.0) {
+			vec3 R = reflect(-L,N);
+			float cos_alpha = dot(R,V);
+			I_specular = materialSpecular * light0Color * 
+			vec3(pow(max(0.0, cos_alpha), materialShininess));
+		}
+
+		L = normalize(light1Position - P);
+		cos_theta = dot(L,N);
+		I_diffuse += materialDiffuse * light1Color * vec3(max(0.0, cos_theta));
+
+		if (cos_theta > 0.0) {
+			vec3 R = reflect(-L,N);
+			float cos_alpha = dot(R,V);
+			I_specular += materialSpecular * light1Color * 
+			vec3(pow(max(0.0, cos_alpha), materialShininess));
+		}
+
+		vec3 I = I_ambient + I_diffuse + I_specular;
+		color = vec4(I, 1.0);
+	}
+</script>
+
+<script id="fragment" type="x-shader">
+	precision highp float;
+	varying vec2 texCoord;
+	varying vec4 color;
+	uniform sampler2D texUnit;
+	void main() {
+		gl_FragColor = vec4(color.xyz,1.0);
+		//gl_FragColor = texture2D(texUnit, texCoord) * color;
+	}
+</script>
+
+<!-- basic structure for following script based on
+https://ezekiel.encs.vancouver.wsu.edu/~cs442/lectures/shadow/webgl/glyph-shadow.html
+-->
+
+<script>
+	var gl;
+	var canvas;
+	var bottle;
+	var glass;
+	var table;
+	var program;
+	var camera;
+	var Model, View, Projection;
+	var light0Position; // WOC : light0Position
+	var matrixStack;  // WOC : need instancing stack
+
+	function init() {
+		canvas = document.getElementById("myCanvas");
+		gl = null;
+		try {	   // WOC : ask for stencil
+			gl = WebGLDebugUtils.makeDebugContext(canvas.getContext("webgl", {stencil : true})); 
+		} catch(e) {gl = null;}
+		if (gl == null) {
+			alert("No WebGL -- bummer!");
+			return false;
+		}
+		var v = document.getElementById("vertex").firstChild.nodeValue;
+		var vs = gl.createShader(gl.VERTEX_SHADER);
+		gl.shaderSource(vs,v);
+		gl.compileShader(vs);
+		if (!gl.getShaderParameter(vs,gl.COMPILE_STATUS)) {
+			alert(gl.getShaderInfoLog(vs));
+			return false;	
+		}
+
+		var f = document.getElementById("fragment").firstChild.nodeValue;
+		var fs = gl.createShader(gl.FRAGMENT_SHADER);
+		gl.shaderSource(fs,f);
+		gl.compileShader(fs);
+		if (!gl.getShaderParameter(fs,gl.COMPILE_STATUS)) {
+			alert(gl.getShaderInfoLog(fs));
+			return false;
+		}
+
+		program = gl.createProgram();
+		gl.attachShader(program, vs);
+		gl.attachShader(program, fs);
+		gl.linkProgram(program);
+
+		gl.useProgram(program);		
+
+		var vertices = new Float32Array(glass.verts);
+		var numVerts = glass.verts.length / 3;
+		var normals = new Float32Array(glass.normals);
+		for(var i = 0; i < numVerts; i++){
+			vertices[3*i] += .5;  //fiddling with placement
+			vertices[3*i+1] += .2;
+		}
+	  glass.vertBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ARRAY_BUFFER, glass.vertBuffer);
+	  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+	  glass.normBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ARRAY_BUFFER, glass.normBuffer);
+	  gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+	  var indices = new Uint16Array(glass.triangleStrip);
+	  glass.numTriangleStripIndices = indices.length;
+	  glass.triangleStripBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glass.triangleStripBuffer);
+	  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+	  glass.texCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glass.texCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, glass.texCoords, gl.STATIC_DRAW);
+
+
+	  vertices = new Float32Array(bottle.verts);
+	  numVerts = bottle.verts.length / 3;
+		normals = new Float32Array(bottle.normals);
+		for(var i = 0; i < numVerts; i++){
+			vertices[3*i] += -.5;
+			vertices[3*i+1] += 0.25;
+		}
+	  bottle.vertBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ARRAY_BUFFER, bottle.vertBuffer);
+	  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+	  bottle.normBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ARRAY_BUFFER, bottle.normBuffer);
+	  gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+	  indices = new Uint16Array(bottle.triangleStrip);
+	  bottle.numTriangleStripIndices = indices.length;
+	  bottle.triangleStripBuffer = gl.createBuffer();
+	  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bottle.triangleStripBuffer);
+	  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+	  bottle.texCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, bottle.texCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, bottle.texCoords, gl.STATIC_DRAW);
+		
+		table = {};
+		table.vertices = [-1, +1, 0,
+											-1, -1, 0,
+											+1, +1, 0,
+											+1, -1, 0];
+		table.numVertices = 4;
+		table.normals = [0, 0, 1,  0, 0, 1,  0, 0, 1,  0, 0, 1];
+		table.texCoords = [0, 1,
+											0, 0,
+											1, 1,
+											1, 0];
+		
+		table.vertBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, table.vertBuffer);
+		vertices = new Float32Array(table.vertices);
+		gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+		table.normBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, table.normBuffer);
+		normals = new Float32Array(table.normals);
+		gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+		table.texCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, table.texCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, table.texCoords, gl.STATIC_DRAW);
+
+		program.vertexPosition = gl.getAttribLocation(program, "vertexPosition");
+		program.vertexNormal = gl.getAttribLocation(program, "vertexNormal");
+    program.vertexTexCoord = gl.getAttribLocation(program, "vertexTexCoord");
+		program.ModelViewProjection = gl.getUniformLocation(program, "ModelViewProjection");
+		program.ModelViewMatrix = gl.getUniformLocation(program, "ModelViewMatrix");
+		program.NormalMatrix = gl.getUniformLocation(program, "NormalMatrix");
+    program.TextureMatrix = gl.getUniformLocation(program, "TextureMatrix");
+		program.ambientLight = gl.getUniformLocation(program, "ambientLight");
+		program.light0Color = gl.getUniformLocation(program, "light0Color");
+		program.light0Position = gl.getUniformLocation(program, "light0Position");
+		program.light1Color = gl.getUniformLocation(program, "light1Color");
+		program.light1Position = gl.getUniformLocation(program, "light1Position");
+
+		program.materialAmbient = gl.getUniformLocation(program, "materialAmbient");
+		program.materialDiffuse = gl.getUniformLocation(program, "materialDiffuse");
+		program.materialSpecular = gl.getUniformLocation(program, "materialSpecular");
+		program.materialShininess = gl.getUniformLocation(program, "materialShininess");
+
+		program.texUnit = gl.getUniformLocation(program, "texUnit");
+
+    gl.uniform1i(program.texUnit, 0);
+
+		light0Position = [-3.0, 3.0, -3.0, 1.0]; // WOC : record light0Position (in view coords);
+
+		gl.uniform3fv(program.ambientLight,[0.2, 0.2, 0.2]);
+		gl.uniform3fv(program.light0Color,[1.0, 1.0, 1.0]);
+		gl.uniform4fv(program.light0Position,light0Position);
+		gl.uniform3fv(program.light1Color,[1.0, 1.0, 1.0]);
+		gl.uniform3fv(program.light1Position,[1.0, 1.0, 1.0]);
+
+		gl.uniform3fv(program.materialAmbient,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialDiffuse,[1.0, 1.0, 1.0]);
+		gl.uniform3fv(program.materialSpecular,[0.5, 0.5, 0.5]);
+		gl.uniform1f(program.materialShininess,15.0);
+
+
+    program.texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, program.texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,  1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+	    new Uint8Array([255, 255, 0, 255])); // yellow
+
+    var textureImage = new Image();
+    textureImage.src = "sample.jpg"; // XXX "brick.png";
+    textureImage.onload = function() {
+  		var isPowerOfTwo = function(value) {
+      	return (value & (value - 1)) == 0;
+  		}
+		  gl.bindTexture(gl.TEXTURE_2D, program.texture);
+		  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+		  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE,
+				textureImage);
+		  if (isPowerOfTwo(textureImage.width) && isPowerOfTwo(textureImage.height)) {
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+	      gl.generateMipmap(gl.TEXTURE_2D);
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+		  } else {  // NPOT
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		  }
+		  frame = requestAnimationFrame(display);
+		}
+
+		gl.clearColor(0.3,0.7,0.7,1);
+
+		Projection = new Matrix4x4;
+		Projection.perspective(30, 1, 0.1, 100);
+
+		gl.viewport(0,0,canvas.width,canvas.height);
+
+		View = new Matrix4x4;
+		Model = new Matrix4x4;
+		Texture = new Matrix4x4;
+    Texture.scale(4, 2, 1);
+
+		matrixStack = new Matrix4x4Stack();  // WOC : create matrix stack
+
+		camera = {};
+		camera.lookat = {x : 0, y : 0, z : 0};
+		camera.distance = 5.5;
+		camera.phi = Math.PI/6;
+		camera.theta = Math.PI/4;
+
+		gl.enable(gl.DEPTH_TEST);
+		gl.enable(gl.CULL_FACE);
+		gl.cullFace(gl.BACK);
+	}
+
+
+	function getCameraPosition() {
+		var d_cos_phi = camera.distance*Math.cos(camera.phi);
+		camera.x = d_cos_phi*Math.sin(camera.theta) + camera.lookat.x;
+		camera.z = camera.distance*Math.sin(camera.phi) + camera.lookat.z;
+		camera.y = d_cos_phi*Math.cos(camera.theta) + camera.lookat.y;
+	}
+
+	function drawBottle() {
+    gl.bindBuffer(gl.ARRAY_BUFFER, bottle.vertBuffer);
+    gl.enableVertexAttribArray(program.vertexPosition);
+    gl.vertexAttribPointer(program.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, bottle.normBuffer);
+    gl.enableVertexAttribArray(program.vertexNormal);
+    gl.vertexAttribPointer(program.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+/*
+    gl.bindBuffer(gl.ARRAY_BUFFER, bottle.texCoordBuffer);
+    gl.enableVertexAttribArray(program.vertexTexCoord);
+    gl.vertexAttribPointer(program.vertexTexCoord, 2, gl.FLOAT, false, 0, 0);
+*/
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bottle.triangleStripBuffer);
+    gl.drawElements(gl.TRIANGLE_STRIP, bottle.numTriangleStripIndices, 
+      gl.UNSIGNED_SHORT, 0);
+  }
+
+  function drawGlass() {
+    gl.bindBuffer(gl.ARRAY_BUFFER, glass.vertBuffer);
+    gl.enableVertexAttribArray(program.vertexPosition);
+    gl.vertexAttribPointer(program.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, glass.normBuffer);
+    gl.enableVertexAttribArray(program.vertexNormal);
+    gl.vertexAttribPointer(program.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+/*
+    gl.bindBuffer(gl.ARRAY_BUFFER, glass.texCoordBuffer);
+    gl.enableVertexAttribArray(program.vertexTexCoord);
+    gl.vertexAttribPointer(program.vertexTexCoord, 2, gl.FLOAT, false, 0, 0);
+*/
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glass.triangleStripBuffer);
+    gl.drawElements(gl.TRIANGLE_STRIP, glass.numTriangleStripIndices, 
+      gl.UNSIGNED_SHORT, 0);
+  }
+
+	function drawTable() {
+		gl.bindBuffer(gl.ARRAY_BUFFER, table.vertBuffer);
+		gl.enableVertexAttribArray(program.vertexPosition);
+		gl.vertexAttribPointer(program.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ARRAY_BUFFER, table.normBuffer);
+		gl.enableVertexAttribArray(program.vertexNormal);
+		gl.vertexAttribPointer(program.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+/*
+		gl.bindBuffer(gl.ARRAY_BUFFER, table.texCoordBuffer);
+    gl.enableVertexAttribArray(program.vertexTexCoord);
+    gl.vertexAttribPointer(program.vertexTexCoord, 2, gl.FLOAT, false, 0, 0);
+*/
+		gl.drawArrays(gl.TRIANGLE_STRIP, 0, table.numVertices);
+	}
+
+	function display() {
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);  // WOC : clear stencil
+
+		getCameraPosition();
+
+		View.identity();
+		View.lookat(camera.x, camera.y, camera.z,
+			camera.lookat.x, camera.lookat.y, camera.lookat.z,
+			0, 0, 1);
+		// XXX console.log(View.array); // XXX
+
+		var ViewInverse = new Matrix4x4();
+		ViewInverse.inverseLookat(camera.x, camera.y, camera.z,
+			camera.lookat.x, camera.lookat.y, camera.lookat.z,
+			0, 0, 1);
+		// XXXX console.log(ViewInverse.array); // XXXX
+
+		var ModelView = View.mult(Model);
+		var MVP = Projection.mult(ModelView);
+		var NormalMatrix = ModelView.normal();
+		gl.uniformMatrix4fv(program.ModelViewProjection, false, MVP.array);
+		gl.uniformMatrix4fv(program.ModelViewMatrix, false, ModelView.array);
+		gl.uniformMatrix3fv(program.NormalMatrix, false, NormalMatrix);
+		gl.uniformMatrix4fv(program.TextureMatrix, false, Texture.array);
+
+		gl.enable(gl.DEPTH_TEST);    // WOC : draw stuff above table
+		gl.disable(gl.STENCIL_TEST);
+		gl.disable(gl.BLEND);
+
+		gl.uniform3fv(program.materialAmbient,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialDiffuse,[0.5, 0.5, 1]);
+		gl.uniform3fv(program.materialSpecular,[0.5, 0.5, 0.5]);
+		gl.uniform1f(program.materialShininess,15.0);
+		
+		drawGlass();
+		drawBottle();
+
+		gl.enable(gl.STENCIL_TEST);   // WOC : draw table, record visible table in stencil
+		gl.stencilFunc(gl.ALWAYS, 1, 1);
+		gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+
+		gl.uniform3fv(program.materialAmbient,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialDiffuse,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialSpecular,[0.1, 0.1, 0.1]);
+		gl.uniform1f(program.materialShininess,15.0);
+
+		drawTable();
+		//end of page 2, step 3
+
+
+		gl.clear(gl.DEPTH_BUFFER_BIT);
+		gl.stencilFunc(gl.EQUAL, 1, 1);
+		gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);		
+		matrixStack.push(Model);
+		gl.cullFace(gl.FRONT);
+		var Reflect = new Matrix4x4().scale(1,1,-1); // flip around z = 0 plane
+		Model.concat(Reflect);
+		var lightReflected = View.mult(Reflect.mult(ViewInverse)).transform(light0Position);
+		var ModelView = View.mult(Model);
+		var MVP = Projection.mult(ModelView);
+		var NormalMatrix = ModelView.normal();
+		gl.uniform3fv(program.materialAmbient,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialDiffuse,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialSpecular,[0.0, 0.0, 0.0]);
+		gl.uniform1f(program.materialShininess,1.0);
+		gl.uniformMatrix4fv(program.ModelViewProjection, false, MVP.array);
+		gl.uniformMatrix4fv(program.ModelViewMatrix, false, ModelView.array);
+		gl.uniformMatrix3fv(program.NormalMatrix, false, NormalMatrix);
+		gl.uniformMatrix4fv(program.TextureMatrix, false, Texture.array);
+		drawGlass();
+		drawBottle();
+		gl.cullFace(gl.BACK);
+		matrixStack.pop(Model);
+		gl.uniform4fv(program.light0Position, light0Position); // restore light position
+
+		//this is shadow stuff
+		//page 3 step 5
+		gl.enable(gl.BLEND);
+		gl.blendColor(1,1,1,0.7);
+		gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
+		drawTable();
+
+		//page 3, step 6
+		gl.enable(gl.BLEND);    // WOC : draw shadow version of glyph
+		gl.blendColor(0,0,0, 0.7);
+		gl.blendFunc(gl.CONSTANT_COLOR, gl.DST_COLOR);
+		gl.stencilFunc(gl.EQUAL, 1,1);
+		gl.stencilOp(gl.KEEP, gl.KEEP, gl.ZERO);
+		matrixStack.push(Model);
+		var L = ViewInverse.transform(light0Position);
+		Model.shadow(L, [0, 0, 1, 0]);
+		gl.enable(gl.POLYGON_OFFSET_FILL);
+		gl.polygonOffset(-1.0, -1.0);
+		var ModelView = View.mult(Model);
+		var MVP = Projection.mult(ModelView);
+		var NormalMatrix = ModelView.normal();
+		gl.uniform3fv(program.materialAmbient,[0.3, 0.3, 0.3]);
+		gl.uniform3fv(program.materialDiffuse,[1.0, 0.0, 0.0]);
+		gl.uniform3fv(program.materialSpecular,[0.0, 0.0, 0.0]);
+		gl.uniform1f(program.materialShininess,1.0);
+		gl.uniformMatrix4fv(program.ModelViewProjection, false, MVP.array);
+		gl.uniformMatrix4fv(program.ModelViewMatrix, false, ModelView.array);
+		gl.uniformMatrix3fv(program.NormalMatrix, false, NormalMatrix);
+		drawGlass();
+		drawBottle();
+		gl.disable(gl.POLYGON_OFFSET_FILL);
+		matrixStack.pop(Model);	
+
+		gl.flush();
+	}
+
+	var animationStartTime;
+	var degreesPerSec = 2.0;
+
+	function drawAnimFrame(currentTime) {
+		requestAnimFrame(drawAnimFrame);
+		if (animationStartTime === undefined)
+			animationStartTime = currentTime;
+		var elapsedTime = (currentTime - animationStartTime)/1000;
+		camera.theta = elapsedTime*degreesPerSec*(Math.PI/180);
+		display();
+	}
+
+
+	function displayResult() {
+		init();
+
+		window.requestAnimFrame = (function(){
+			return  window.requestAnimationFrame       || 
+			window.webkitRequestAnimationFrame || 
+			window.mozRequestAnimationFrame    || 
+			window.oRequestAnimationFrame      || 
+			window.msRequestAnimationFrame     || 
+			function(/* function */ callback, /* DOMElement */ element){
+				window.setTimeout(callback, 1000 / 60);
+			};
+		})();    
+
+		degreesPerSec = 20.0;
+		requestAnimFrame(drawAnimFrame);
+	}
+</script>
+
+
+
+<body bgcolor="7F7F7F" onload="displayResult()">
+
+	<h2>Shadows and Reflections</h2>
+
+	<p>
+		<canvas id="myCanvas" width="500" height="500"></canvas><br />
+	</p>
+
+	<hr>
+	<i>Chris Willette 12/9/16</i>
+</body>
+</html>
